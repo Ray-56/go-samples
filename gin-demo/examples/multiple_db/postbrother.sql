@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS `postbrother_6`(
+   `callid` INT UNSIGNED AUTO_INCREMENT,
+   `callee` VARCHAR(20) NOT NULL,
+   `bizlabel` VARCHAR(20) NOT NULL,
+   `starttime` DATETIME DEFAULT NULL,
+   `endtime` DATETIME DEFAULT NULL,
+   PRIMARY KEY ( `callid` )
+)ENGINE=InnoDB DEFAULT CHARSET=utf8;
