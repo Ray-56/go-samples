@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Postbrother struct {
@@ -30,13 +31,17 @@ var db2 *gorm.DB
 func init() {
 	var err error
 	dsn1 := "root@tcp(127.0.0.1:3306)/cdr1?charset=utf8mb4&parseTime=True&loc=Local"
-	db1, err = gorm.Open(mysql.Open(dsn1), &gorm.Config{})
+	db1, err = gorm.Open(mysql.Open(dsn1), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
 	if err != nil {
 		panic("failed to connect database")
 	}
 
 	dsn2 := "root@tcp(127.0.0.1:3306)/cdr2?charset=utf8mb4&parseTime=True&loc=Local"
-	db2, err = gorm.Open(mysql.Open(dsn2), &gorm.Config{})
+	db2, err = gorm.Open(mysql.Open(dsn2), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
 	if err != nil {
 		panic("failed to connect database")
 	}
@@ -55,7 +60,9 @@ func main() {
 }
 
 type QueryParams struct {
+	Callids   []string  `json:"callids" form:"callids"`
 	BizLabel  string    `json:"bizlabel" form:"bizlabel"`
+	Callees   []string  `json:"callees" form:"callees"`
 	Callee    string    `json:"callee" form:"callee"`
 	StartTime time.Time `json:"starttime" form:"starttime" binding:"required"`
 	EndTime   time.Time `json:"endtime" form:"endtime" binding:"required"`
@@ -66,7 +73,7 @@ func fetchAll(c *gin.Context) {
 	c.Request.URL.RawQuery = strings.ReplaceAll(c.Request.URL.RawQuery, "+", "%2b")
 
 	var queryParams QueryParams
-	if err := c.ShouldBind(&queryParams); err != nil {
+	if err := c.ShouldBindQuery(&queryParams); err != nil {
 		fmt.Println("error", err.Error())
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -109,10 +116,22 @@ func getTablesCrd(db *gorm.DB, queryParams QueryParams) ([]Postbrother, error) {
 
 	for _, t := range tables {
 		var cdrlist []Postbrother
-		// fmt.Sprintf("%%%s%%", queryParams.Callee)
-		if err := db.Table(t).Where("callee LIKE ?", "%"+queryParams.Callee+"%").Where("bizlabel LIKE ?", fmt.Sprintf("%%%s%%", queryParams.BizLabel)).Where("starttime >= ?", queryParams.StartTime).Where("starttime <= ?", queryParams.EndTime).Find(&cdrlist).Error; err != nil {
+		tx := db.Table(t).Where("starttime between ? and ?", queryParams.StartTime, queryParams.EndTime)
+
+		if len(queryParams.Callees) > 0 {
+			tx = tx.Where("callee In ?", queryParams.Callees)
+		}
+		if len(queryParams.BizLabel) > 0 {
+			tx = tx.Where("bizlabel LIKE ?", queryParams.BizLabel+"%")
+		}
+		if len(queryParams.Callee) > 0 {
+			tx = tx.Where("callee LIKE ?", queryParams.Callee+"%")
+		}
+
+		if err := tx.Limit(5000).Find(&cdrlist).Error; err != nil {
 			return allCdrList, err
 		}
+
 		allCdrList = append(allCdrList, cdrlist...)
 	}
 

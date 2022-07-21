@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 func main() {
@@ -13,6 +14,8 @@ func main() {
 	// 	count++
 	// }
 	// fmt.Println(ret)
+	strList := []string{"a", "b", "c", "d", "e"}
+	fmt.Println(strings.Join(strList, ","))
 	mounths, err := genTables(1, 8)
 	if err != nil {
 		fmt.Println(err)
