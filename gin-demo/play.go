@@ -3,24 +3,31 @@ package main
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"sync"
 )
 
 func main() {
-	// var ret []string
-	// var count uint = 0
-	// for i := uint(6); i < 9; i++ {
-	// 	ret = append(ret, fmt.Sprintf("cdr_postbrother_%d", i))
-	// 	count++
-	// }
-	// fmt.Println(ret)
-	strList := []string{"a", "b", "c", "d", "e"}
-	fmt.Println(strings.Join(strList, ","))
-	mounths, err := genTables(1, 8)
+	// number := math.MaxInt64
+	var wg sync.WaitGroup
+	wg.Add(100)
+	var rslt []string
+	for i := 0; i < 100; i++ {
+		go func(i int) {
+			defer func() {
+				wg.Done()
+			}()
+			fmt.Printf("go func: %d\n", i)
+			rslt = append(rslt /* "#"+string(i) */, fmt.Sprint("#", i))
+			// time.Sleep(time.Second)
+		}(i)
+	}
+	wg.Wait()
+	fmt.Println(rslt)
+	/* mounths, err := genTables(1, 8)
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Println(mounths)
+	fmt.Println(mounths) */
 }
 
 func genTables(start uint, end uint) ([]string, error) {

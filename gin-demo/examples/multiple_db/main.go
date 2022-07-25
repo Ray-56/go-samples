@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,23 +26,26 @@ func (Postbrother) TabName() string {
 	return "postbrother"
 }
 
-var db1 *gorm.DB
-var db2 *gorm.DB
+var dbList [2]*gorm.DB
 
 func init() {
 	var err error
+	var db1 *gorm.DB
 	dsn1 := "root@tcp(127.0.0.1:3306)/cdr1?charset=utf8mb4&parseTime=True&loc=Local"
 	db1, err = gorm.Open(mysql.Open(dsn1), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
+	dbList[0] = db1
 	if err != nil {
 		panic("failed to connect database")
 	}
 
+	var db2 *gorm.DB
 	dsn2 := "root@tcp(127.0.0.1:3306)/cdr2?charset=utf8mb4&parseTime=True&loc=Local"
 	db2, err = gorm.Open(mysql.Open(dsn2), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
+	dbList[1] = db2
 	if err != nil {
 		panic("failed to connect database")
 	}
@@ -79,63 +83,65 @@ func fetchAll(c *gin.Context) {
 		return
 	}
 
-	var allCdrList []Postbrother
-	crd1List, err := getTablesCrd(db1, queryParams)
-	fmt.Println("crd1List =>", crd1List)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err})
-		return
-	}
-	allCdrList = append(allCdrList, crd1List...)
-
-	crd2List, err := getTablesCrd(db2, queryParams)
-	fmt.Println("crd2List =>", crd2List)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err})
-		return
-	}
-
-	allCdrList = append(allCdrList, crd2List...)
-
-	if len(allCdrList) <= 0 {
-		c.JSON(http.StatusNotFound, gin.H{"message": "Not todo found!"})
-		return
-	}
-	c.JSON(http.StatusOK, allCdrList)
-}
-
-// 按照传入日期查询多表数据
-func getTablesCrd(db *gorm.DB, queryParams QueryParams) ([]Postbrother, error) {
-	var allCdrList []Postbrother
-
+	var rsltCdrList []Postbrother
 	tables, err := genTables(uint(queryParams.StartTime.Month()), uint(queryParams.EndTime.Month()))
 	fmt.Println("tables =>", tables)
 	if err != nil {
-		return allCdrList, err
+		c.JSON(http.StatusBadRequest, gin.H{"error": err})
+	}
+	cSize := 2 * len(tables)
+	ch := make(chan []Postbrother, cSize)
+	var wg sync.WaitGroup
+
+	for _, db := range dbList {
+		wg.Add(1)
+		go func(db *gorm.DB) {
+			defer func() {
+				wg.Done()
+			}()
+			// getTablesCrd(db, queryParams)
+			for _, t := range tables {
+				wg.Add(1)
+				go func(tName string) {
+					defer func() {
+						wg.Done()
+					}()
+					queryTable(db, tName, queryParams, ch)
+				}(t)
+			}
+		}(db)
+	}
+	wg.Wait()
+	close(ch)
+
+	for received := range ch {
+		rsltCdrList = append(rsltCdrList, received...)
 	}
 
-	for _, t := range tables {
-		var cdrlist []Postbrother
-		tx := db.Table(t).Where("starttime between ? and ?", queryParams.StartTime, queryParams.EndTime)
+	if len(rsltCdrList) <= 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Not todo found!"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rsltCdrList, "atotal": len(rsltCdrList)})
+}
 
-		if len(queryParams.Callees) > 0 {
-			tx = tx.Where("callee In ?", queryParams.Callees)
-		}
-		if len(queryParams.BizLabel) > 0 {
-			tx = tx.Where("bizlabel LIKE ?", queryParams.BizLabel+"%")
-		}
-		if len(queryParams.Callee) > 0 {
-			tx = tx.Where("callee LIKE ?", queryParams.Callee+"%")
-		}
-
-		if err := tx.Limit(5000).Find(&cdrlist).Error; err != nil {
-			return allCdrList, err
-		}
-
-		allCdrList = append(allCdrList, cdrlist...)
+func queryTable(db *gorm.DB, tableName string, queryParams QueryParams, ch chan<- []Postbrother) {
+	var cdrlist []Postbrother
+	tx := db.Table(tableName).Where("starttime between ? and ?", queryParams.StartTime, queryParams.EndTime)
+	if len(queryParams.Callees) > 0 {
+		tx = tx.Where("callee In ?", queryParams.Callees)
+	}
+	if len(queryParams.BizLabel) > 0 {
+		tx = tx.Where("bizlabel LIKE ?", queryParams.BizLabel+"%")
+	}
+	if len(queryParams.Callee) > 0 {
+		tx = tx.Where("callee LIKE ?", queryParams.Callee+"%")
+	}
+	if err := tx.Limit(5000).Find(&cdrlist).Error; err != nil {
+		fmt.Println("error", err.Error())
 	}
 
-	return allCdrList, nil
+	ch <- cdrlist
 }
 
 func genTables(start uint, end uint) ([]string, error) {
@@ -153,3 +159,43 @@ func genTables(start uint, end uint) ([]string, error) {
 
 	return ret, nil
 }
+
+// 按照传入日期查询多表数据(同步 -> goroutine + channel)
+/* func _getTablesCrd(db *gorm.DB, queryParams QueryParams) ([]Postbrother, error) {
+	var allCdrList []Postbrother
+
+	tables, err := genTables(uint(queryParams.StartTime.Month()), uint(queryParams.EndTime.Month()))
+	fmt.Println("tables =>", tables)
+	if err != nil {
+		return allCdrList, err
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(tables))
+	for _, t := range tables {
+		go func(t string) {
+			defer func() {
+				wg.Done()
+			}()
+			var cdrlist []Postbrother
+			tx := db.Table(t).Where("starttime between ? and ?", queryParams.StartTime, queryParams.EndTime)
+			if len(queryParams.Callees) > 0 {
+				tx = tx.Where("callee In ?", queryParams.Callees)
+			}
+			if len(queryParams.BizLabel) > 0 {
+				tx = tx.Where("bizlabel LIKE ?", queryParams.BizLabel+"%")
+			}
+			if len(queryParams.Callee) > 0 {
+				tx = tx.Where("callee LIKE ?", queryParams.Callee+"%")
+			}
+			if err := tx.Limit(5000).Find(&cdrlist).Error; err != nil {
+				fmt.Println("error", err.Error())
+			}
+
+			allCdrList = append(allCdrList, cdrlist...)
+		}(t)
+	}
+	wg.Wait()
+
+	return allCdrList, nil
+} */
